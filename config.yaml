@@ -1,0 +1,101 @@
+# =====================================================================
+# ComexStat Dashboard - Configuracion central
+# Fuente: https://www.gov.br/mdic/pt-br/assuntos/comercio-exterior/estatisticas/base-de-dados-bruta
+# =====================================================================
+
+# Años a descargar/procesar (la base detallada más completa: por NCM)
+years: [2025, 2026]
+
+# Base de URLs
+base_urls:
+  ncm: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/ncm"
+  mun: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/mun"
+  tabelas: "https://balanca.economia.gov.br/balanca/bd/tabelas"
+
+# ---------------------------------------------------------------------
+# Bases de datos principales (NCM = más completa, MUN = por municipio/SH4)
+# ---------------------------------------------------------------------
+datasets:
+  # Base detallada por NCM (8 digitos) - la más completa
+  ncm_exp:
+    template: "{base}/EXP_{year}.csv"
+    source: ncm
+    flow: exp
+    layout: [CO_ANO, CO_MES, CO_NCM, CO_UNID, CO_PAIS, SG_UF_NCM, CO_VIA, CO_URF, QT_ESTAT, KG_LIQUIDO, VL_FOB]
+
+  ncm_imp:
+    template: "{base}/IMP_{year}.csv"
+    source: ncm
+    flow: imp
+    layout: [CO_ANO, CO_MES, CO_NCM, CO_UNID, CO_PAIS, SG_UF_NCM, CO_VIA, CO_URF, QT_ESTAT, KG_LIQUIDO, VL_FOB, VL_FRETE, VL_SEGURO]
+
+  # Base por municipio del exportador/importador + SH4
+  mun_exp:
+    template: "{base}/EXP_{year}_MUN.csv"
+    source: mun
+    flow: exp
+    layout: [CO_ANO, CO_MES, SH4, CO_PAIS, SG_UF_MUN, CO_MUN, KG_LIQUIDO, VL_FOB]
+
+  mun_imp:
+    template: "{base}/IMP_{year}_MUN.csv"
+    source: mun
+    flow: imp
+    layout: [CO_ANO, CO_MES, SH4, CO_PAIS, SG_UF_MUN, CO_MUN, KG_LIQUIDO, VL_FOB]
+
+# ---------------------------------------------------------------------
+# Archivos de totales para validación oficial
+# ---------------------------------------------------------------------
+validation:
+  ncm_exp: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/ncm/EXP_TOTAIS_CONFERENCIA.csv"
+  ncm_imp: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/ncm/IMP_TOTAIS_CONFERENCIA.csv"
+  mun_exp: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/mun/EXP_TOTAIS_CONFERENCIA_MUN.csv"
+  mun_imp: "https://balanca.economia.gov.br/balanca/bd/comexstat-bd/mun/IMP_TOTAIS_CONFERENCIA_MUN.csv"
+
+# ---------------------------------------------------------------------
+# Tablas de correlación (dimensiones) - necesarias para decodificar códigos
+# ---------------------------------------------------------------------
+tabelas:
+  # Productos / NCM
+  NCM: "NCM.csv"                          # Tabla maestra NCM (descripciones)
+  NCM_SH: "NCM_SH.csv"                    # NCM <-> Sistema Armonizado (capitulos SH)
+  NCM_CUCI: "NCM_CUCI.csv"                # NCM <-> CUCI (comercio internacional)
+  NCM_ISIC: "NCM_ISIC.csv"                # NCM <-> ISIC (actividad industrial)
+  NCM_CGCE: "NCM_CGCE.csv"                # NCM <-> Grandes Categorias Economicas
+  NCM_FAT_AGREG: "NCM_FAT_AGREG.csv"      # NCM <-> Factor Agregado
+  NCM_PPE: "NCM_PPE.csv"                  # NCM <-> Pauta Exportacoes
+  NCM_PPI: "NCM_PPI.csv"                  # NCM <-> Pauta Importaciones
+  NCM_UNIDADE: "NCM_UNIDADE.csv"          # Unidades estadisticas NCM (CO_UNID)
+  # Paises y bloques
+  PAIS: "PAIS.csv"                        # Tabla de paises (CO_PAIS)
+  PAIS_BLOCO: "PAIS_BLOCO.csv"            # Paises por bloque economico
+  # Geografia
+  UF: "UF.csv"                            # Unidades de la Federacion (SG_UF)
+  UF_MUN: "UF_MUN.csv"                    # Municipios (CO_MUN)
+  # Operacionales
+  VIA: "VIA.csv"                          # Vias de transporte (CO_VIA)
+  URF: "URF.csv"                          # Unidades RFB embarque/desembarque (CO_URF)
+
+# ---------------------------------------------------------------------
+# Configuracion de descarga
+# ---------------------------------------------------------------------
+download:
+  # El host balanca.economia.gov.br no envía el certificado intermedio
+  # (cadena incompleta). Intentamos verificacion primero; si falla,
+  # reintenta con verify=False (datos públicos de SERPRO/MDIC verificados).
+  ssl_fallback_insecure: true
+  timeout_seconds: 120
+  # Reintentos por archivo
+  max_retries: 6
+  # Idempotencia: si el archivo local existe y el Last-Modified remoto
+  # no cambió, se omite la descarga. forzar con --force.
+  chunk_size: 1048576  # 1 MB
+  user_agent: "ComexStat-Dashboard/1.0"
+
+# ---------------------------------------------------------------------
+# Rutas del proyecto (relativas a la raíz)
+# ---------------------------------------------------------------------
+paths:
+  raw_ncm: "data/raw/ncm"
+  raw_mun: "data/raw/mun"
+  raw_tabelas: "data/raw/tabelas"
+  processed: "data/processed"

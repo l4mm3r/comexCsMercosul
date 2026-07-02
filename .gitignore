@@ -1,0 +1,19 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Datos (se descargan/regeneran, no se versionan)
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# DuckDB / temporales
+*.duckdb
+*.duckdb.wal
+*.part

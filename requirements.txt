@@ -1,0 +1,13 @@
+# ComexStat Dashboard - Dependencias
+# Instalar: .venv/bin/pip install -r requirements.txt
+
+# --- Fase 1: descarga + transformación + validación ---
+requests==2.34.2
+pandas==3.0.3
+duckdb==1.5.4
+pyarrow==24.0.0
+PyYAML==6.0.3
+
+# --- Fase 2: dashboard (app Streamlit) ---
+streamlit>=1.45
+plotly>=6.0
