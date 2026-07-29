@@ -351,7 +351,30 @@ class ComexDB:
             FROM {src} s {where}
             ORDER BY VL_FOB DESC LIMIT {int(limit)}
         """
-        return self.con.execute(q, params).fetchdf()
+        df = self.con.execute(q, params).fetchdf()
+        return df if df is not None else pd.DataFrame()
+
+    def camiones_por_ncm(self, filt: Filters, n: int = 200) -> pd.DataFrame:
+        """Tabla agregada por NCM con cálculo de camiones.
+
+        camiones = toneladas / 15 (peso medio referencial por camión).
+        Aplica a todos los NCM como valor de referencia.
+        """
+        where, params = self._where(filt)
+        src = self._source(filt)
+        q = f"""
+            SELECT flujo, CO_NCM AS ncm, NO_NCM AS producto,
+                   ROUND(SUM(KG_LIQUIDO) / 1000.0, 0) AS toneladas,
+                   SUM(VL_FOB) AS fob_total,
+                   ROUND(SUM(KG_LIQUIDO) / 15000.0, 0) AS camiones,
+                   COUNT(*) AS n_ops
+            FROM {src} s {where}
+            GROUP BY flujo, CO_NCM, NO_NCM
+            ORDER BY camiones DESC, fob_total DESC
+            LIMIT {int(n)}
+        """
+        df = self.con.execute(q, params).fetchdf()
+        return df if df is not None else pd.DataFrame()
 
     def trade_balance(self, filt: Filters) -> pd.DataFrame:
         """Balanza mensual (exp, imp, saldo) respetando todos los filtros.

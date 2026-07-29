@@ -386,11 +386,37 @@ def chart_municipios(db: ComexDB, f: Filters):
     st.plotly_chart(fig, width="stretch")
 
 
+def render_camiones(db: ComexDB, f: Filters):
+    st.subheader("🚛 Camiones por NCM")
+    st.caption(
+        "_Estimación: toneladas ÷ 15 (peso medio referencial por camión)._"
+    )
+    df = db.camiones_por_ncm(f)
+    if df is None or df.empty:
+        st.info("Sin datos para el cálculo de camiones con los filtros actuales.")
+        return
+    df = df.copy()
+    df["Flujo"] = df["flujo"].map({"exp": "EXP", "imp": "IMP"})
+    df["Toneladas"] = df["toneladas"].map(lambda v: f"{int(v):,}".replace(",", "."))
+    df["FOB"] = df["fob_total"].map(fmt_money)
+    df["Camiones"] = df["camiones"].map(
+        lambda v: f"{int(v):,}".replace(",", ".") if pd.notna(v) else "—"
+    )
+    df["Ops"] = df["n_ops"].map(fmt_int)
+    show = df[["Flujo", "ncm", "producto", "Toneladas", "FOB", "Camiones", "Ops"]]
+    st.dataframe(show, width="stretch", hide_index=True)
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Descargar CSV", csv, file_name="comexstat_camiones.csv",
+        mime="text/csv",
+    )
+
+
 def render_detail(db: ComexDB, f: Filters):
     st.subheader("📋 Detalle de operaciones (top por FOB)")
     limit = st.slider("Número de registros", 50, 2000, 500, step=50)
     df = db.detail(f, limit)
-    if df.empty:
+    if df is None or df.empty:
         st.info("Sin datos.")
         return
     df = df.copy()
@@ -474,6 +500,8 @@ def main():
         chart_municipios(db, f)
 
     with tab6:
+        render_camiones(db, f)
+        st.divider()
         render_detail(db, f)
 
 
