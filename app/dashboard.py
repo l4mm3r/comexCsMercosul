@@ -9,6 +9,7 @@ Ejecutar:
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -32,6 +33,24 @@ _SERIE_COLORS = {
     "IMP 2025": "#fca5a5",
     "IMP 2026": "#e3342f",
 }
+
+PERIOD_MONTHS = {"1m": 1, "3m": 3, "6m": 6, "1a": 12}
+PERIOD_LABELS = {
+    "1m": "Último mes", "3m": "Últimos 3 meses",
+    "6m": "Últimos 6 meses", "1a": "Último año",
+}
+
+
+def _compute_ym_range(latest_ym: int, months_back: int) -> tuple[int, int]:
+    year, month = latest_ym // 100, latest_ym % 100
+    total = year * 12 + (month - 1) - (months_back - 1)
+    sy, sm = total // 12, total % 12 + 1
+    return sy * 100 + sm, latest_ym
+
+
+def _ym_label(ym: int) -> str:
+    y, m = ym // 100, ym % 100
+    return f"{NOMBRES_MESES[m].lower()} {y}"
 
 
 # ----------------------------------------------------------------- #
@@ -307,52 +326,87 @@ def chart_pie_fat(db: ComexDB, f: Filters):
 
 
 def chart_fronteras(db: ComexDB, f: Filters):
-    if len(f.urfs) < 2:
+    if not f.urfs:
         st.info(
-            "Selecciona **2 o más fronteras** en el panel lateral "
-            "(🛃 Frontera) para comparar."
+            "Selecciona una o más fronteras en el panel lateral "
+            "(🛃 Frontera) para ver el detalle."
         )
         return
-    c = db.compare_urfs(f)
-    summary = c["summary"]
-    top_prod = c["top_products"]
-    if summary.empty:
-        st.warning("Sin datos para las fronteras seleccionadas.")
+
+    periodo = st.radio(
+        "Período",
+        options=list(PERIOD_LABELS.keys()),
+        format_func=lambda x: PERIOD_LABELS[x],
+        horizontal=True,
+    )
+
+    latest = db.latest_period()
+    months_back = PERIOD_MONTHS[periodo]
+    ym_start, ym_end = _compute_ym_range(latest, months_back)
+    st.caption(
+        f"Datos de **{_ym_label(ym_start)}** a **{_ym_label(ym_end)}** "
+        f"(fuente: Comex Stat MDIC)."
+    )
+
+    f_period = replace(f, ym_start=ym_start, ym_end=ym_end)
+    df = db.top_products_by_urf(f_period, 10)
+    if df.empty:
+        st.warning("Sin datos para las fronteras y período seleccionados.")
         return
 
-    st.subheader("📊 Resumen por frontera")
-    disp = summary.copy()
-    disp["FOB"] = disp["fob"].map(fmt_money)
-    disp["Peso"] = disp["kg"].map(fmt_weight)
-    disp["Ops"] = disp["n_reg"].map(fmt_int)
-    disp["Flujo"] = disp["flujo"].map(FLOW_LABELS)
+    urf_codes = list(dict.fromkeys(
+        zip(df["codigo"], df["frontera"])
+    ))
+
+    if len(urf_codes) <= 3:
+        cols = st.columns(len(urf_codes))
+        for i, (code, name) in enumerate(urf_codes):
+            with cols[i]:
+                _urf_top_chart(df[df["codigo"] == code], name)
+    else:
+        for code, name in urf_codes:
+            with st.expander(name, expanded=True):
+                _urf_top_chart(df[df["codigo"] == code], name)
+
+    st.divider()
+    st.subheader("📋 Resumen comparativo")
+    summary = df.groupby(["frontera", "flujo"]).agg(
+        toneladas=("toneladas", "sum"),
+        fob=("fob", "sum"),
+        productos=("ncm", "nunique"),
+    ).reset_index()
+    summary["Toneladas"] = summary["toneladas"].map(
+        lambda v: f"{int(v):,}".replace(",", "."))
+    summary["FOB"] = summary["fob"].map(fmt_money)
+    summary["Flujo"] = summary["flujo"].map(FLOW_LABELS)
     st.dataframe(
-        disp[["frontera", "Flujo", "FOB", "Peso", "Ops"]],
+        summary[["frontera", "Flujo", "Toneladas", "FOB", "productos"]],
         width="stretch", hide_index=True,
     )
-
-    st.subheader("📈 FOB por frontera y flujo")
-    summary["flujo_lbl"] = summary["flujo"].map(FLOW_LABELS)
-    fig = px.bar(
-        summary, x="frontera", y="fob", color="flujo_lbl",
-        barmode="group",
-        labels={"fob": "FOB (US$)", "frontera": "", "flujo_lbl": ""},
-        color_discrete_map={FLOW_LABELS["exp"]: PALETTE["exp"],
-                            FLOW_LABELS["imp"]: PALETTE["imp"]},
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Descargar CSV", csv,
+        file_name="comexstat_fronteras_top10.csv", mime="text/csv",
     )
-    fig.update_layout(height=400)
-    st.plotly_chart(fig, width="stretch")
 
-    st.subheader("📦 Producto principal por frontera")
-    if not top_prod.empty:
-        top_prod = top_prod.copy()
-        top_prod["FOB"] = top_prod["fob"].map(fmt_money)
-        top_prod["Flujo"] = top_prod["flujo"].map(FLOW_LABELS)
-        top_prod["producto"] = top_prod["producto"].str[:60]
-        st.dataframe(
-            top_prod[["frontera", "Flujo", "producto", "FOB"]],
-            width="stretch", hide_index=True,
-        )
+
+def _urf_top_chart(sub: pd.DataFrame, name: str):
+    st.markdown(f"**🛃 {name}**")
+    sub = sub.copy()
+    sub["label"] = sub["producto"].str[:45]
+    sub = sub.sort_values("toneladas", ascending=True)
+    fig = px.bar(
+        sub, x="toneladas", y="label", color="flujo",
+        orientation="h",
+        color_discrete_map=PALETTE,
+        labels={"toneladas": "Toneladas", "label": "", "flujo": ""},
+    )
+    fig.update_layout(
+        height=max(280, len(sub) * 24 + 60),
+        showlegend=len(sub["flujo"].unique()) > 1,
+        margin=dict(l=0, r=10, t=0, b=0),
+    )
+    st.plotly_chart(fig, width="stretch")
 
 
 def chart_municipios(db: ComexDB, f: Filters):

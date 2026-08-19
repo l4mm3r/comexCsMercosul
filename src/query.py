@@ -49,6 +49,8 @@ class Filters:
     fat_agreg: list[str] = field(default_factory=list)   # CO_FAT_AGREG
     urfs: list[str] = field(default_factory=list)        # CO_URF (frontera) — solo NCM
     ncms: list[str] = field(default_factory=list)        # CO_NCM (8 dígitos) — solo NCM
+    ym_start: int | None = None                          # YYYYMM (ej: 202512)
+    ym_end: int | None = None                            # YYYYMM (ej: 202605)
 
 
 # Columnas comunes a v_exp_ncm y v_imp_ncm (la importación tiene además
@@ -168,12 +170,16 @@ class ComexDB:
     def _where(self, filt: Filters, table: str = "ncm") -> tuple[str, list]:
         """Devuelve (sql_sin_WHERE_incluyendo_espacio, params)."""
         clauses, params = [], []
-        if filt.years:
-            clauses.append(f"CO_ANO IN ({','.join('?' * len(filt.years))})")
-            params += list(filt.years)
-        if filt.months:
-            clauses.append(f"CO_MES IN ({','.join('?' * len(filt.months))})")
-            params += list(filt.months)
+        if filt.ym_start is not None and filt.ym_end is not None:
+            clauses.append("(CAST(CO_ANO AS INTEGER) * 100 + CO_MES BETWEEN ? AND ?)")
+            params += [filt.ym_start, filt.ym_end]
+        else:
+            if filt.years:
+                clauses.append(f"CO_ANO IN ({','.join('?' * len(filt.years))})")
+                params += list(filt.years)
+            if filt.months:
+                clauses.append(f"CO_MES IN ({','.join('?' * len(filt.months))})")
+                params += list(filt.months)
         if filt.countries:
             clauses.append(f"CO_PAIS IN ({','.join('?' * len(filt.countries))})")
             params += [str(c) for c in filt.countries]
@@ -434,6 +440,45 @@ class ComexDB:
         if not top_products.empty:
             top_products["frontera"] = top_products["frontera"].map(clean_urf_name)
         return {"summary": summary, "top_products": top_products}
+
+    def latest_period(self) -> int:
+        """Último año-mes con datos, formato YYYYMM (ej: 202605)."""
+        return self.con.execute(
+            "SELECT MAX(CAST(CO_ANO AS INTEGER) * 100 + CO_MES) FROM v_exp_ncm"
+        ).fetchone()[0]
+
+    def top_products_by_urf(self, filt: Filters, n: int = 10) -> pd.DataFrame:
+        """Top-N productos por toneladas para cada URF seleccionada.
+
+        Devuelve: codigo(CO_URF), frontera, flujo, ncm, producto,
+                  toneladas, fob, n_ops, rn(ranking dentro de cada URF+flujo).
+        """
+        where, params = self._where(filt)
+        src = self._source(filt)
+        q = f"""
+            WITH ranked AS (
+                SELECT CO_URF, COALESCE(NO_URF, CAST(CO_URF AS VARCHAR)) AS frontera,
+                       CO_NCM, NO_NCM, flujo,
+                       ROUND(SUM(KG_LIQUIDO) / 1000.0, 0) AS toneladas,
+                       SUM(VL_FOB) AS fob,
+                       COUNT(*) AS n_ops,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CO_URF, flujo
+                           ORDER BY SUM(KG_LIQUIDO) DESC
+                       ) AS rn
+                FROM {src} s {where}
+                GROUP BY CO_URF, NO_URF, CO_NCM, NO_NCM, flujo
+            )
+            SELECT CO_URF AS codigo, frontera, flujo, CO_NCM AS ncm,
+                   NO_NCM AS producto, toneladas, fob, n_ops, rn
+            FROM ranked WHERE rn <= {int(n)}
+            ORDER BY CO_URF, flujo, rn
+        """
+        df = self.con.execute(q, params).fetchdf()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df["frontera"] = df["frontera"].map(clean_urf_name)
+        return df
 
     def top_municipios(self, filt: Filters, n: int = 15) -> pd.DataFrame:
         """Ranking de municipios (base por municipio). URF/NCM no aplican aquí."""
