@@ -6,6 +6,9 @@ env/
 # Datos (se descargan/regeneran, no se versionan)
 data/raw/
 data/processed/
+# Excepción: parquets procesados sí se versionan (deploy Streamlit Cloud)
+!data/processed/
+!data/processed/*.parquet
 
 # Python
 __pycache__/
