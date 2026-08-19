@@ -4,9 +4,11 @@ Capa de acceso a datos para el dashboard ComexStat (multi-flujo).
 Soporta ver Exportación e Importación simultáneamente (UNION de flujos con
 columna `flujo`), y filtros por frontera (URF) y por código NCM.
 
-Las tablas enriquecidas v_{exp,imp}_{ncm,mun} se materializan en memoria
-una sola vez (joins ya resueltos), de modo que las consultas filtradas son
-muy rápidas.
+Las tablas enriquecidas v_{exp,imp}_{ncm,mun} se almacenan en un archivo
+DuckDB en disco (data/processed/comexstat.duckdb) con límite de memoria
+acotado: funciona igual en local y en contenedores con poca RAM (p. ej.
+Streamlit Cloud). Si los parquets son más nuevos que el archivo (tras la
+actualización mensual), las tablas se reconstruyen automáticamente.
 
 Uso típico:
     db = ComexDB()
@@ -95,32 +97,73 @@ def clean_urf_name(name: str) -> str:
 # --------------------------------------------------------------------- #
 # Conexión y tablas
 # --------------------------------------------------------------------- #
-class ComexDB:
-    """Conexión DuckDB con tablas enriquecidas y consultas multi-flujo."""
+DB_FILENAME = "comexstat.duckdb"
 
-    def __init__(self, cfg: dict | None = None, materialize: bool = True):
+# Parquets de los que dependen las tablas: si alguno es más nuevo que el
+# archivo .duckdb, las tablas se reconstruyen (p. ej. tras actualizar datos).
+_DB_DEPS = (
+    "exp_ncm.parquet", "imp_ncm.parquet", "exp_mun.parquet", "imp_mun.parquet",
+    "dim_ncm.parquet", "dim_ncm_sh.parquet", "dim_fat_agreg.parquet",
+    "dim_pais.parquet", "dim_uf.parquet", "dim_via.parquet",
+    "dim_urf.parquet", "dim_mun.parquet",
+)
+
+
+class ComexDB:
+    """Conexión DuckDB (archivo en disco) con tablas enriquecidas
+    y consultas multi-flujo."""
+
+    def __init__(self, cfg: dict | None = None):
         self.cfg = cfg or load_config()
         self.proc = project_path(self.cfg["paths"]["processed"]).resolve()
-        self.con = duckdb.connect()
+        self.db_path = self.proc / DB_FILENAME
+        self.con = duckdb.connect(str(self.db_path))
         try:
             self.con.execute("PRAGMA disable_progress_bar")
         except Exception:
             pass
-        self._build(materialize=materialize)
+        for pragma in (
+            "SET memory_limit = '1GB'",
+            "SET threads = 2",
+            "SET preserve_insertion_order = false",
+        ):
+            try:
+                self.con.execute(pragma)
+            except Exception:
+                pass
+        self._build_if_stale()
 
     def _p(self, name: str) -> str:
         return f"'{(self.proc / name).as_posix()}'"
 
-    def _build(self, materialize: bool = True) -> None:
-        p = self._p
-        kind = "TABLE" if materialize else "VIEW"
+    def _needs_rebuild(self) -> bool:
+        if not self.db_path.exists():
+            return True
+        try:
+            tables = {r[0] for r in self.con.execute("SHOW TABLES").fetchall()}
+        except Exception:
+            return True
+        required = {"v_exp_ncm", "v_imp_ncm", "v_exp_mun", "v_imp_mun"}
+        if not required.issubset(tables):
+            return True
+        db_mtime = self.db_path.stat().st_mtime
+        for name in _DB_DEPS:
+            dep = self.proc / name
+            if dep.exists() and dep.stat().st_mtime > db_mtime:
+                return True
+        return False
 
-        def ncm_view(flow: str) -> str:
+    def _build_if_stale(self) -> None:
+        if not self._needs_rebuild():
+            return
+        p = self._p
+
+        def ncm_table(flow: str) -> str:
             extra = ""
             if flow == "imp":
                 extra = ", f.VL_FRETE, f.VL_SEGURO, (f.VL_FOB+f.VL_FRETE+f.VL_SEGURO) AS VL_CIF"
             return f"""
-                CREATE OR REPLACE {kind} v_{flow}_ncm AS
+                CREATE OR REPLACE TABLE v_{flow}_ncm AS
                 SELECT f.CO_ANO, f.CO_MES, f.CO_NCM, f.CO_UNID,
                        f.CO_PAIS, f.SG_UF_NCM AS SG_UF, f.CO_VIA, f.CO_URF,
                        f.QT_ESTAT, f.KG_LIQUIDO, f.VL_FOB{extra},
@@ -139,9 +182,9 @@ class ComexDB:
                 LEFT JOIN read_parquet({p('dim_urf.parquet')}) r ON f.CO_URF = r.CO_URF
             """
 
-        def mun_view(flow: str) -> str:
+        def mun_table(flow: str) -> str:
             return f"""
-                CREATE OR REPLACE {kind} v_{flow}_mun AS
+                CREATE OR REPLACE TABLE v_{flow}_mun AS
                 SELECT f.CO_ANO, f.CO_MES, f.SH4 AS CO_SH4, f.CO_PAIS,
                        f.SG_UF_MUN AS SG_UF, f.CO_MUN,
                        f.KG_LIQUIDO, f.VL_FOB,
@@ -154,8 +197,11 @@ class ComexDB:
             """
 
         for flow in ("exp", "imp"):
-            self.con.execute(ncm_view(flow))
-            self.con.execute(mun_view(flow))
+            self.con.execute(ncm_table(flow))
+            self.con.execute(mun_table(flow))
+        # Volcar a disco y truncar el WAL: el archivo queda consistente y su
+        # mtime refleja el momento del build (para la detección de staleness).
+        self.con.execute("CHECKPOINT")
 
     # ----------------------------------------------------------------- #
     # Construcción de fuente (UNION de flujos) y WHERE parametrizado

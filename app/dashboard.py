@@ -497,7 +497,10 @@ def main():
         page_icon="🌍", layout="wide",
     )
 
-    with st.spinner("Cargando base de datos (optimizando consultas)..."):
+    with st.spinner(
+        "Preparando base de datos... "
+        "(la primera vez puede tardar ~30 s)"
+    ):
         db = get_db()
     opt = get_options(db)
 
